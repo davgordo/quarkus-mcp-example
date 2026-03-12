@@ -1,0 +1,99 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen25-14b-tools
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen25-14b-tools
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: qwen25-14b-tools
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.memory
+                    operator: Gt
+                    values: ["24000"]
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          args:
+            - Qwen/Qwen2.5-14B-Instruct-AWQ
+            - --enable-auto-tool-choice
+            - --tool-call-parser
+            - hermes
+            - --structured-outputs-config.backend
+            - xgrammar
+            - --max-model-len
+            - "8192"
+            - --served-model-name
+            - qwen25-14b-tools
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: token
+            - name: XDG_CONFIG_HOME
+              value: /tmp
+            - name: TRANSFORMERS_VERBOSITY
+              value: info
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - mountPath: /.cache
+              name: cache-volume
+            - mountPath: /tmp
+              name: tmp-volume
+            - mountPath: /.triton
+              name: triton-volume
+      volumes:
+        - name: cache-volume
+          emptyDir: {}
+        - name: tmp-volume
+          emptyDir: {}
+        - name: triton-volume
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen25-14b-tools
+spec:
+  selector:
+    app: qwen25-14b-tools
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+      name: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: qwen
+spec:
+  to:
+    kind: Service
+    name: qwen25-14b-tools
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
